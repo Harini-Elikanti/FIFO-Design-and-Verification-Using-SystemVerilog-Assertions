@@ -1,0 +1,420 @@
+`timescale 1ns/1ps
+
+module fifo_assertion_tb;
+
+    // =================================================
+    // TEST PARAMETERS
+    // =================================================
+
+    localparam DATA_WIDTH = 8;
+    localparam DEPTH      = 4;
+
+
+    // =================================================
+    // DUT SIGNALS
+    // =================================================
+
+    reg                  clk;
+    reg                  rst;
+
+    reg                  wr_en;
+    reg                  rd_en;
+
+    reg [DATA_WIDTH-1:0] wr_data;
+    wire [DATA_WIDTH-1:0] rd_data;
+
+    wire                  full;
+    wire                  empty;
+
+
+    // =================================================
+    // DUT
+    // =================================================
+
+    fifo #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .DEPTH(DEPTH)
+    ) dut (
+        .clk     (clk),
+        .rst     (rst),
+
+        .wr_en   (wr_en),
+        .rd_en   (rd_en),
+
+        .wr_data (wr_data),
+        .rd_data (rd_data),
+
+        .full    (full),
+        .empty   (empty)
+    );
+
+
+    // =================================================
+    // CLOCK GENERATION
+    // 10 ns clock period
+    // =================================================
+
+    initial begin
+        clk = 0;
+
+        forever #5 clk = ~clk;
+    end
+
+
+    // =================================================
+    // SCOREBOARD / REFERENCE MODEL
+    // =================================================
+
+    reg [DATA_WIDTH-1:0] expected_mem [0:DEPTH-1];
+
+    integer expected_wr_ptr;
+    integer expected_rd_ptr;
+    integer expected_count;
+
+
+    // =================================================
+    // SCOREBOARD
+    // =================================================
+
+    always @(posedge clk) begin
+
+        if (rst) begin
+
+            expected_wr_ptr = 0;
+            expected_rd_ptr = 0;
+            expected_count  = 0;
+
+        end
+
+        else begin
+
+            // -----------------------------------------
+            // VALID WRITE
+            // -----------------------------------------
+
+            if (wr_en && !full) begin
+
+                expected_mem[expected_wr_ptr] = wr_data;
+
+                expected_wr_ptr =
+                    expected_wr_ptr + 1;
+
+                if (expected_wr_ptr == DEPTH)
+                    expected_wr_ptr = 0;
+
+                expected_count =
+                    expected_count + 1;
+
+                $display(
+                    "[SCOREBOARD] WRITE: Data = %0h",
+                    wr_data
+                );
+
+            end
+
+
+            // -----------------------------------------
+            // VALID READ
+            // -----------------------------------------
+
+            if (rd_en && !empty) begin
+
+                // Allow DUT rd_data to update
+                #1;
+
+                if (rd_data !== expected_mem[expected_rd_ptr]) begin
+
+                    $error(
+                        "[SCOREBOARD ERROR] Expected = %0h, Got = %0h",
+                        expected_mem[expected_rd_ptr],
+                        rd_data
+                    );
+
+                end
+
+                else begin
+
+                    $display(
+                        "[SCOREBOARD PASS] Expected = %0h, Got = %0h",
+                        expected_mem[expected_rd_ptr],
+                        rd_data
+                    );
+
+                end
+
+
+                expected_rd_ptr =
+                    expected_rd_ptr + 1;
+
+                if (expected_rd_ptr == DEPTH)
+                    expected_rd_ptr = 0;
+
+                expected_count =
+                    expected_count - 1;
+
+            end
+
+        end
+
+    end
+
+
+    // =================================================
+    // ASSERTION 1
+    //
+    // FIFO cannot be FULL and EMPTY simultaneously.
+    // =================================================
+
+    property p_full_empty_exclusive;
+
+        @(posedge clk)
+        !(full && empty);
+
+    endproperty
+
+    assert property (p_full_empty_exclusive)
+        else $error(
+            "ASSERTION FAILED: FIFO is FULL and EMPTY simultaneously"
+        );
+
+
+    // =================================================
+    // ASSERTION 2
+    //
+    // Write pointer must not move when FIFO is FULL.
+    // =================================================
+
+    property p_no_write_when_full;
+
+        @(posedge clk)
+        (full && wr_en)
+        |=> $stable(dut.wr_ptr);
+
+    endproperty
+
+    assert property (p_no_write_when_full)
+        else $error(
+            "ASSERTION FAILED: Write pointer moved while FIFO was FULL"
+        );
+
+
+    // =================================================
+    // ASSERTION 3
+    //
+    // Read pointer must not move when FIFO is EMPTY.
+    // =================================================
+
+    property p_no_read_when_empty;
+
+        @(posedge clk)
+        (empty && rd_en)
+        |=> $stable(dut.rd_ptr);
+
+    endproperty
+
+    assert property (p_no_read_when_empty)
+        else $error(
+            "ASSERTION FAILED: Read pointer moved while FIFO was EMPTY"
+        );
+
+
+    // =================================================
+    // ASSERTION 4
+    //
+    // Reset should make FIFO EMPTY.
+    // =================================================
+
+    property p_reset_makes_empty;
+
+        @(posedge clk)
+        rst |=> empty;
+
+    endproperty
+
+    assert property (p_reset_makes_empty)
+        else $error(
+            "ASSERTION FAILED: FIFO is not EMPTY after reset"
+        );
+
+
+    // =================================================
+    // ASSERTION 5
+    //
+    // Write pointer should only move during a
+    // valid write operation.
+    // =================================================
+
+    property p_write_pointer_stability;
+
+        @(posedge clk)
+        (!rst && !(wr_en && !full))
+        |=> $stable(dut.wr_ptr);
+
+    endproperty
+
+    assert property (p_write_pointer_stability)
+        else $error(
+            "ASSERTION FAILED: Write pointer moved without valid write"
+        );
+
+
+    // =================================================
+    // ASSERTION 6
+    //
+    // Read pointer should only move during a
+    // valid read operation.
+    // =================================================
+
+    property p_read_pointer_stability;
+
+        @(posedge clk)
+        (!rst && !(rd_en && !empty))
+        |=> $stable(dut.rd_ptr);
+
+    endproperty
+
+    assert property (p_read_pointer_stability)
+        else $error(
+            "ASSERTION FAILED: Read pointer moved without valid read"
+        );
+
+
+    // =================================================
+    // TEST SEQUENCE
+    // =================================================
+
+    initial begin
+
+        // ---------------------------------------------
+        // INITIALIZATION
+        // ---------------------------------------------
+
+        rst     = 1;
+        wr_en   = 0;
+        rd_en   = 0;
+        wr_data = 0;
+
+
+        // ---------------------------------------------
+        // RESET
+        // ---------------------------------------------
+
+        #12;
+
+        rst = 0;
+
+
+        // =============================================
+        // TEST 1: WRITE FOUR VALUES
+        // =============================================
+
+        @(negedge clk);
+
+        wr_en   = 1;
+        wr_data = 8'hA5;
+
+
+        @(negedge clk);
+
+        wr_data = 8'h3C;
+
+
+        @(negedge clk);
+
+        wr_data = 8'h77;
+
+
+        @(negedge clk);
+
+        wr_data = 8'h12;
+
+
+        // =============================================
+        // TEST 2: ATTEMPT WRITE WHEN FULL
+        // =============================================
+
+        @(negedge clk);
+
+        wr_data = 8'hFF;
+
+
+        // ---------------------------------------------
+        // STOP WRITING
+        // ---------------------------------------------
+
+        @(negedge clk);
+
+        wr_en = 0;
+
+
+        // =============================================
+        // TEST 3: READ FOUR VALUES
+        // =============================================
+
+        @(negedge clk);
+
+        rd_en = 1;
+
+
+        @(negedge clk);
+
+        @(negedge clk);
+
+        @(negedge clk);
+
+
+        // =============================================
+        // TEST 4: ATTEMPT READ WHEN EMPTY
+        // =============================================
+
+        @(negedge clk);
+
+
+        // ---------------------------------------------
+        // STOP READING
+        // ---------------------------------------------
+
+        @(negedge clk);
+
+        rd_en = 0;
+
+
+        // =============================================
+        // END SIMULATION
+        // =============================================
+
+        #20;
+
+        $display("");
+        $display("==============================================");
+        $display(" PARAMETERIZED FIFO VERIFICATION COMPLETED ");
+        $display("==============================================");
+        $display("");
+
+        $finish;
+
+    end
+
+
+    // =================================================
+    // MONITOR
+    // =================================================
+
+    initial begin
+
+        $monitor(
+            "TIME=%0t | rst=%b | wr_en=%b | rd_en=%b | ",
+            "wr_data=%h | rd_data=%h | full=%b | empty=%b",
+            $time,
+            rst,
+            wr_en,
+            rd_en,
+            wr_data,
+            rd_data,
+            full,
+            empty
+        );
+
+    end
+
+endmodule
